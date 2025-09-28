@@ -4,59 +4,70 @@ import html2canvas from "html2canvas";
 import { motion } from "framer-motion";
 import { Check, Mail, Download, Trash2 } from "lucide-react";
 
-// Minimal in-file Signature Pad
+// Minimal in-file Signature Pad (Pointer Events for iOS/Android + desktop)
 function SignaturePad({ onChange }) {
   const canvasRef = useRef(null);
   const [isDrawing, setIsDrawing] = useState(false);
 
+  // Setup canvas scaling & keep it crisp on retina; also handle window resize
   useEffect(() => {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext("2d");
-    // High-DPI scaling
-    const rect = canvas.getBoundingClientRect();
-    const ratio = Math.max(window.devicePixelRatio || 1, 1);
-    canvas.width = rect.width * ratio;
-    canvas.height = rect.height * ratio;
-    ctx.scale(ratio, ratio);
-    ctx.lineWidth = 2;
-    ctx.lineCap = "round";
-    ctx.strokeStyle = "#111827";
+    const resize = () => {
+      const rect = canvas.getBoundingClientRect();
+      const ratio = Math.max(window.devicePixelRatio || 1, 1);
+      canvas.width = rect.width * ratio;
+      canvas.height = rect.height * ratio;
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      ctx.lineWidth = 2;
+      ctx.lineCap = "round";
+      ctx.strokeStyle = "#111827";
+    };
+    resize();
+    window.addEventListener("resize", resize);
+    return () => window.removeEventListener("resize", resize);
   }, []);
 
   const getPos = (e) => {
     const canvas = canvasRef.current;
     const rect = canvas.getBoundingClientRect();
-    if (e.touches) {
-      return {
-        x: e.touches[0].clientX - rect.left,
-        y: e.touches[0].clientY - rect.top,
-      };
-    }
+    // Pointer Events unify mouse/pen/touch
     return { x: e.clientX - rect.left, y: e.clientY - rect.top };
   };
 
-  const start = (e) => {
-    setIsDrawing(true);
+  const onDown = (e) => {
+    e.preventDefault();
     const ctx = canvasRef.current.getContext("2d");
     const { x, y } = getPos(e);
     ctx.beginPath();
     ctx.moveTo(x, y);
+    setIsDrawing(true);
+    canvasRef.current.setPointerCapture?.(e.pointerId);
   };
-  const move = (e) => {
+
+  const onMove = (e) => {
     if (!isDrawing) return;
+    e.preventDefault();
     const ctx = canvasRef.current.getContext("2d");
     const { x, y } = getPos(e);
     ctx.lineTo(x, y);
     ctx.stroke();
-    if (onChange) onChange(canvasRef.current.toDataURL("image/png"));
   };
-  const end = () => setIsDrawing(false);
+
+  const onUp = (e) => {
+    if (!isDrawing) return;
+    e.preventDefault();
+    setIsDrawing(false);
+    // Save image only after completing a stroke
+    onChange?.(canvasRef.current.toDataURL("image/png"));
+    canvasRef.current.releasePointerCapture?.(e.pointerId);
+  };
 
   const clear = () => {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext("2d");
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    if (onChange) onChange("");
+    onChange?.("");
   };
 
   return (
@@ -67,14 +78,13 @@ function SignaturePad({ onChange }) {
       >
         <canvas
           ref={canvasRef}
-          className="w-full h-full rounded-2xl touch-none"
-          onMouseDown={start}
-          onMouseMove={move}
-          onMouseUp={end}
-          onMouseLeave={end}
-          onTouchStart={start}
-          onTouchMove={move}
-          onTouchEnd={end}
+          className="w-full h-full rounded-2xl touch-none select-none"
+          onPointerDown={onDown}
+          onPointerMove={onMove}
+          onPointerUp={onUp}
+          onPointerLeave={onUp}
+          onContextMenu={(e) => e.preventDefault()}
+          style={{ cursor: "crosshair" }}
         />
       </div>
       <button
@@ -87,6 +97,7 @@ function SignaturePad({ onChange }) {
     </div>
   );
 }
+
 
 function Field({ label, children, required }) {
   return (
