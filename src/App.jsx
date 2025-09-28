@@ -76,16 +76,17 @@ function SignaturePad({ onChange }) {
         className="border rounded-2xl bg-white shadow-inner"
         style={{ width: "100%", height: 160 }}
       >
-        <canvas
-          ref={canvasRef}
-          className="w-full h-full rounded-2xl touch-none select-none"
-          onPointerDown={onDown}
-          onPointerMove={onMove}
-          onPointerUp={onUp}
-          onPointerLeave={onUp}
-          onContextMenu={(e) => e.preventDefault()}
-          style={{ cursor: "crosshair" }}
-        />
+<canvas
+  ref={canvasRef}
+  className="w-full h-full rounded-2xl touch-none select-none"
+  onPointerDown={onDown}
+  onPointerMove={onMove}
+  onPointerUp={onUp}
+  onPointerLeave={onUp}
+  onContextMenu={(e) => e.preventDefault()}
+  style={{ cursor: "crosshair", touchAction: "none" }}  // <-- add this
+/>
+
       </div>
       <button
         type="button"
