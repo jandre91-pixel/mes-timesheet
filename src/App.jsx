@@ -3,6 +3,21 @@ import { jsPDF } from "jspdf";
 import html2canvas from "html2canvas";
 import { motion } from "framer-motion";
 import { Check, Mail, Download, Trash2, Lock, Unlock } from "lucide-react";
+import { PublicClientApplication, InteractionRequiredAuthError } from "@azure/msal-browser";
+
+// ==========================
+// Microsoft Graph (Outlook) – per-employee sending
+// ==========================
+// 👉 Replace these two values after you create the Azure App Registration
+const msalConfig = {
+  auth: {
+    clientId: "REPLACE_WITH_YOUR_CLIENT_ID",
+    authority: "https://login.microsoftonline.com/REPLACE_WITH_YOUR_TENANT_ID",
+    redirectUri: typeof window !== "undefined" ? window.location.origin : "",
+  },
+  cache: { cacheLocation: "localStorage" },
+};
+const msalInstance = typeof window !== "undefined" ? new PublicClientApplication(msalConfig) : null;
 
 // ------------------------------
 // Robust Signature Pad: iPhone/Android/Mouse
@@ -159,7 +174,6 @@ export default function App() {
   // Remember emails locally on device
   const [knownClientAdmins, setKnownClientAdmins] = useState([]);
   const [knownPersonalAdmins, setKnownPersonalAdmins] = useState([]);
-  // ✅ FIX: separate state value and setter names
   const [personalAsDefault, setPersonalAsDefault] = useState(true);
 
   useEffect(() => {
@@ -175,6 +189,14 @@ export default function App() {
       setKnownPersonalAdmins(b);
       if (def) setForm((f) => ({ ...f, personalAdminEmail: def }));
     } catch {}
+  }, []);
+
+  // MSAL: Handle post-login redirect & keep an active account
+  useEffect(() => {
+    if (!msalInstance) return;
+    msalInstance.handleRedirectPromise().then((res) => {
+      if (res?.account) msalInstance.setActiveAccount(res.account);
+    });
   }, []);
 
   const update = (k) => (e) => {
@@ -256,7 +278,7 @@ export default function App() {
 
   const mailto = () => {
     saveEmails();
-    const subject = encodeURIComponent(`Timesheet ${pdfDataSource.jobNumber} - ${pdfDataSource.date}`);
+    const subject = encodeURIComponent(`[MES] ${pdfDataSource.employee || "Employee"} — ${pdfDataSource.client} — ${pdfDataSource.date} (${pdfDataSource.jobNumber})`);
     const body = encodeURIComponent(
       `Signed at: ${sealedAt || "(not sealed)"}
 Verification ID: ${verificationId ? verificationId.slice(0, 16) : "n/a"}
@@ -271,6 +293,116 @@ This email includes two recipients: Client Admin and Your Admin.`
     );
     const to = [pdfDataSource.clientAdminEmail, pdfDataSource.personalAdminEmail].filter(Boolean).join(",");
     window.location.href = `mailto:${to}?subject=${subject}&body=${body}`;
+  };
+
+  // ---------- Outlook (Graph) send as the employee ----------
+  const renderPdfBlob = async () => {
+    const node = previewRef.current;
+    const canvas = await html2canvas(node, { scale: 2 });
+    const imgData = canvas.toDataURL("image/png");
+    const pdf = new jsPDF({ unit: "mm", format: "a4" });
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const ratio = Math.min(pageWidth / (canvas.width / 2), pageHeight / (canvas.height / 2));
+    const w = (canvas.width / 2) * ratio;
+    const h = (canvas.height / 2) * ratio;
+    const x = (pageWidth - w) / 2;
+    pdf.addImage(imgData, "PNG", x, 10, w, h);
+    return pdf.output("blob");
+  };
+
+  const blobToBase64 = (blob) => new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result.split(",")[1]);
+    reader.readAsDataURL(blob);
+  });
+
+  const ensureLogin = async () => {
+    if (!msalInstance) throw new Error("MSAL not initialised");
+    let acc = msalInstance.getActiveAccount();
+    if (!acc) {
+      try {
+        await msalInstance.loginPopup({ scopes: ["Mail.Send"] });
+      } catch (e) {
+        // Popup may fail on iPhone; fall back to redirect
+        await msalInstance.loginRedirect({ scopes: ["Mail.Send"] });
+        return false; // redirecting
+      }
+      acc = msalInstance.getActiveAccount();
+    }
+    return true;
+  };
+
+  const getToken = async () => {
+    const account = msalInstance.getActiveAccount();
+    try {
+      const res = await msalInstance.acquireTokenSilent({ scopes: ["Mail.Send"], account });
+      return res.accessToken;
+    } catch (e) {
+      if (e instanceof InteractionRequiredAuthError) {
+        const res = await msalInstance.acquireTokenPopup({ scopes: ["Mail.Send"] });
+        return res.accessToken;
+      }
+      throw e;
+    }
+  };
+
+  const sendViaOutlook = async () => {
+    const v = validate();
+    if (!v.ok) { alert(v.msg); return; }
+
+    const logged = await ensureLogin();
+    if (!logged) return; // was redirected to login
+
+    const token = await getToken();
+    const pdfBlob = await renderPdfBlob();
+    const contentBytes = await blobToBase64(pdfBlob);
+    const filename = `Timesheet_${pdfDataSource.jobNumber}_${pdfDataSource.date}.pdf`;
+
+    const toRecipients = [pdfDataSource.clientAdminEmail, pdfDataSource.personalAdminEmail]
+      .filter(Boolean)
+      .map((addr) => ({ emailAddress: { address: addr } }));
+
+    const subject = `[MES] ${pdfDataSource.employee || "Employee"} — ${pdfDataSource.client} — ${pdfDataSource.date} (${pdfDataSource.jobNumber})`;
+
+    const message = {
+      message: {
+        subject,
+        body: {
+          contentType: "Text",
+          content: `Signed at: ${sealedAt || "(not sealed)"}
+Verification ID: ${verificationId ? verificationId.slice(0,16) : "n/a"}
+
+Client: ${pdfDataSource.client}
+Site: ${pdfDataSource.site}
+Date: ${pdfDataSource.date}
+Employee: ${pdfDataSource.employee}
+Hours: ${pdfDataSource.hours}`,
+        },
+        toRecipients,
+        attachments: [
+          {
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            name: filename,
+            contentType: "application/pdf",
+            contentBytes,
+          },
+        ],
+      },
+      saveToSentItems: true,
+    };
+
+    const res = await fetch("https://graph.microsoft.com/v1.0/me/sendMail", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(message),
+    });
+
+    if (res.ok) alert("Sent from your Outlook mailbox ✅");
+    else {
+      const err = await res.text();
+      alert("Send failed: " + err);
+    }
   };
 
   const reset = () => {
@@ -395,6 +527,9 @@ This email includes two recipients: Client Admin and Your Admin.`
               <button type="button" onClick={mailto} className="inline-flex items-center gap-2 px-4 py-2 rounded-2xl shadow border hover:bg-gray-50">
                 <Mail className="w-4 h-4" /> Open email draft (both)
               </button>
+              <button type="button" onClick={sendViaOutlook} className="inline-flex items-center gap-2 px-4 py-2 rounded-2xl shadow border hover:bg-gray-50">
+                <Mail className="w-4 h-4" /> Send via Outlook (auto)
+              </button>
               <button type="button" onClick={reset} className="inline-flex items-center gap-2 px-4 py-2 rounded-2xl shadow border hover:bg-gray-50">
                 <Trash2 className="w-4 h-4" /> Reset form
               </button>
@@ -470,7 +605,7 @@ This email includes two recipients: Client Admin and Your Admin.`
         </div>
 
         <div className="mt-6 text-xs text-gray-500">
-          Tip: Emails are remembered on this device only. To auto-send PDFs without opening your mail app, add EmailJS or a simple server later.
+          Tip: Emails are remembered on this device only. To auto-send PDFs without opening your mail app, sign in with Outlook using the button above.
         </div>
       </div>
     </div>
