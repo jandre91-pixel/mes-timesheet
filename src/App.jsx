@@ -2,14 +2,15 @@ import React, { useEffect, useRef, useState } from "react";
 import { jsPDF } from "jspdf";
 import html2canvas from "html2canvas";
 import { motion } from "framer-motion";
-import { Check, Mail, Download, Trash2 } from "lucide-react";
+import { Check, Mail, Download, Trash2, Lock, Unlock } from "lucide-react";
 
-// Minimal in-file Signature Pad (Pointer Events for iOS/Android + desktop)
-function SignaturePad({ onChange }) {
+// ------------------------------
+// Robust Signature Pad: iPhone/Android/Mouse
+// ------------------------------
+function SignaturePad({ onChange, disabled }) {
   const canvasRef = useRef(null);
-  const [isDrawing, setIsDrawing] = useState(false);
+  const drawingRef = useRef(false);
 
-  // Setup canvas scaling & keep it crisp on retina; also handle window resize
   useEffect(() => {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext("2d");
@@ -28,42 +29,45 @@ function SignaturePad({ onChange }) {
     return () => window.removeEventListener("resize", resize);
   }, []);
 
-  const getPos = (e) => {
-    const canvas = canvasRef.current;
-    const rect = canvas.getBoundingClientRect();
-    // Pointer Events unify mouse/pen/touch
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  const posFromEvt = (e) => {
+    const rect = canvasRef.current.getBoundingClientRect();
+    if (e.touches && e.touches.length) {
+      const t = e.touches[0];
+      return { x: t.clientX - rect.left, y: t.clientY - rect.top };
+    }
+    const cx = e.clientX ?? (e.nativeEvent?.clientX ?? 0);
+    const cy = e.clientY ?? (e.nativeEvent?.clientY ?? 0);
+    return { x: cx - rect.left, y: cy - rect.top };
   };
 
-  const onDown = (e) => {
+  const begin = (e) => {
+    if (disabled) return;
     e.preventDefault();
     const ctx = canvasRef.current.getContext("2d");
-    const { x, y } = getPos(e);
+    const { x, y } = posFromEvt(e);
     ctx.beginPath();
     ctx.moveTo(x, y);
-    setIsDrawing(true);
-    canvasRef.current.setPointerCapture?.(e.pointerId);
+    drawingRef.current = true;
+    if (e.pointerId && canvasRef.current.setPointerCapture) canvasRef.current.setPointerCapture(e.pointerId);
   };
-
-  const onMove = (e) => {
-    if (!isDrawing) return;
+  const draw = (e) => {
+    if (disabled || !drawingRef.current) return;
     e.preventDefault();
     const ctx = canvasRef.current.getContext("2d");
-    const { x, y } = getPos(e);
+    const { x, y } = posFromEvt(e);
     ctx.lineTo(x, y);
     ctx.stroke();
   };
-
-  const onUp = (e) => {
-    if (!isDrawing) return;
+  const end = (e) => {
+    if (disabled || !drawingRef.current) return;
     e.preventDefault();
-    setIsDrawing(false);
-    // Save image only after completing a stroke
+    drawingRef.current = false;
     onChange?.(canvasRef.current.toDataURL("image/png"));
-    canvasRef.current.releasePointerCapture?.(e.pointerId);
+    if (e?.pointerId && canvasRef.current.releasePointerCapture) canvasRef.current.releasePointerCapture(e.pointerId);
   };
 
   const clear = () => {
+    if (disabled) return;
     const canvas = canvasRef.current;
     const ctx = canvas.getContext("2d");
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -72,45 +76,41 @@ function SignaturePad({ onChange }) {
 
   return (
     <div className="space-y-2">
-      <div
-        className="border rounded-2xl bg-white shadow-inner"
-        style={{ width: "100%", height: 160 }}
-      >
-<canvas
-  ref={canvasRef}
-  className="w-full h-full rounded-2xl touch-none select-none"
-  onPointerDown={onDown}
-  onPointerMove={onMove}
-  onPointerUp={onUp}
-  onPointerLeave={onUp}
-  onContextMenu={(e) => e.preventDefault()}
-  style={{ cursor: "crosshair", touchAction: "none" }}  // <-- add this
-/>
-
+      <div className="border rounded-2xl bg-white shadow-inner relative" style={{ width: "100%", height: 160 }}>
+        <canvas
+          ref={canvasRef}
+          className="w-full h-full rounded-2xl touch-none select-none"
+          onPointerDown={begin}
+          onPointerMove={draw}
+          onPointerUp={end}
+          onPointerLeave={end}
+          onMouseDown={begin}
+          onMouseMove={draw}
+          onMouseUp={end}
+          onMouseLeave={end}
+          onTouchStart={begin}
+          onTouchMove={draw}
+          onTouchEnd={end}
+          onTouchCancel={end}
+          style={{ cursor: disabled ? "not-allowed" : "crosshair", touchAction: "none" }}
+          onContextMenu={(e) => e.preventDefault()}
+        />
+        {disabled && (
+          <div className="absolute inset-0 bg-white/60 backdrop-blur-[1px] rounded-2xl flex items-center justify-center text-sm text-gray-600">
+            <Lock className="w-4 h-4 mr-1" /> Locked after signature
+          </div>
+        )}
       </div>
-      <button
-        type="button"
-        onClick={clear}
-        className="px-3 py-2 text-sm rounded-xl border shadow hover:bg-gray-50 inline-flex items-center gap-2"
-      >
-        <Trash2 className="w-4 h-4" /> Clear signature
-      </button>
+      {!disabled && (
+        <button type="button" onClick={clear} className="px-3 py-2 text-sm rounded-xl border shadow hover:bg-gray-50 inline-flex items-center gap-2">
+          <Trash2 className="w-4 h-4" /> Clear signature
+        </button>
+      )}
     </div>
   );
 }
 
-
-function Field({ label, children, required }) {
-  return (
-    <label className="block space-y-1">
-      <span className="text-sm font-medium text-gray-700">
-        {label} {required && <span className="text-red-500">*</span>}
-      </span>
-      {children}
-    </label>
-  );
-}
-
+// Utility: calculate hours
 function calcHours(startTime, finishTime, breakMin) {
   if (!startTime || !finishTime) return "";
   const [sh, sm] = startTime.split(":").map(Number);
@@ -120,6 +120,13 @@ function calcHours(startTime, finishTime, breakMin) {
   minutes -= Number(breakMin || 0);
   if (minutes < 0) minutes = 0;
   return (minutes / 60).toFixed(2);
+}
+
+async function sha256Hex(obj) {
+  const data = new TextEncoder().encode(JSON.stringify(obj));
+  const hash = await crypto.subtle.digest("SHA-256", data);
+  const arr = Array.from(new Uint8Array(hash));
+  return arr.map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 export default function App() {
@@ -137,63 +144,90 @@ export default function App() {
     employee: "",
     materials: "",
     clientName: "",
-    adminEmail: "",
+    clientAdminEmail: "",
+    personalAdminEmail: "",
   });
+
   const [clientSignature, setClientSignature] = useState("");
+  const [isSealed, setIsSealed] = useState(false);
+  const [sealedAt, setSealedAt] = useState("");
+  const [lockedForm, setLockedForm] = useState(null);
+  const [verificationId, setVerificationId] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const previewRef = useRef(null);
 
-  // remember admin emails locally
-  const [knownAdmins, setKnownAdmins] = useState([]);
-  const [setAsDefault, setSetAsDefault] = useState(true);
+  // Remember emails locally on device
+  const [knownClientAdmins, setKnownClientAdmins] = useState([]);
+  const [knownPersonalAdmins, setKnownPersonalAdmins] = useState([]);
+  // ✅ FIX: separate state value and setter names
+  const [personalAsDefault, setPersonalAsDefault] = useState(true);
 
   useEffect(() => {
-    setForm((f) => ({
-      ...f,
-      hours: calcHours(f.start, f.finish, f.breakMin),
-    }));
+    setForm((f) => ({ ...f, hours: calcHours(f.start, f.finish, f.breakMin) }));
   }, [form.start, form.finish, form.breakMin]);
 
-  // Load saved admin emails & default once
   useEffect(() => {
     try {
-      const saved = JSON.parse(localStorage.getItem("mes_admin_emails") || "[]");
-      const def = localStorage.getItem("mes_default_admin_email") || "";
-      setKnownAdmins(saved);
-      if (def) {
-        setForm((f) => ({ ...f, adminEmail: def }));
-      }
-    } catch (e) {}
+      const a = JSON.parse(localStorage.getItem("mes_client_admins") || "[]");
+      const b = JSON.parse(localStorage.getItem("mes_personal_admins") || "[]");
+      const def = localStorage.getItem("mes_personal_admin_default") || "";
+      setKnownClientAdmins(a);
+      setKnownPersonalAdmins(b);
+      if (def) setForm((f) => ({ ...f, personalAdminEmail: def }));
+    } catch {}
   }, []);
 
-  const update = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+  const update = (k) => (e) => {
+    if (isSealed) return; // locked after signature
+    setForm({ ...form, [k]: e.target.value });
+  };
+
+  const saveEmails = () => {
+    if (form.clientAdminEmail) {
+      const list = Array.from(new Set([form.clientAdminEmail, ...knownClientAdmins])).slice(0, 10);
+      setKnownClientAdmins(list);
+      localStorage.setItem("mes_client_admins", JSON.stringify(list));
+    }
+    if (form.personalAdminEmail) {
+      const list = Array.from(new Set([form.personalAdminEmail, ...knownPersonalAdmins])).slice(0, 10);
+      setKnownPersonalAdmins(list);
+      localStorage.setItem("mes_personal_admins", JSON.stringify(list));
+      if (personalAsDefault) localStorage.setItem("mes_personal_admin_default", form.personalAdminEmail);
+    }
+  };
+
+  const seal = async () => {
+    // Lock the form and compute a verification hash
+    const payload = { ...form, clientSignature };
+    const hash = await sha256Hex(payload);
+    setIsSealed(true);
+    setSealedAt(new Date().toISOString());
+    setLockedForm({ ...form });
+    setVerificationId(hash);
+  };
+
+  const onSignature = async (dataUrl) => {
+    setClientSignature(dataUrl);
+    if (dataUrl && !isSealed) await seal();
+  };
+
+  const unlock = () => {
+    if (!confirm("Clear signature and unlock the form?")) return;
+    setClientSignature("");
+    setIsSealed(false);
+    setSealedAt("");
+    setLockedForm(null);
+    setVerificationId("");
+  };
 
   const validate = () => {
-    const req = [
-      "jobNumber",
-      "client",
-      "site",
-      "date",
-      "start",
-      "finish",
-      "employee",
-      "description",
-      "clientName",
-    ];
+    const req = ["jobNumber", "client", "site", "date", "start", "finish", "employee", "description", "clientName", "clientAdminEmail", "personalAdminEmail"];
     for (const k of req) if (!form[k]) return { ok: false, msg: `Missing: ${k}` };
     if (!clientSignature) return { ok: false, msg: "Client signature is required" };
     return { ok: true };
   };
 
-  const saveAdminEmail = (email) => {
-    if (!email) return;
-    const list = Array.from(new Set([email, ...knownAdmins])).slice(0, 10);
-    setKnownAdmins(list);
-    localStorage.setItem("mes_admin_emails", JSON.stringify(list));
-    if (setAsDefault) {
-      localStorage.setItem("mes_default_admin_email", email);
-    }
-  };
+  const pdfDataSource = isSealed && lockedForm ? lockedForm : form;
 
   const downloadPDF = async () => {
     setSubmitting(true);
@@ -209,29 +243,38 @@ export default function App() {
     const pdf = new jsPDF({ unit: "mm", format: "a4" });
     const pageWidth = pdf.internal.pageSize.getWidth();
     const pageHeight = pdf.internal.pageSize.getHeight();
-    const imgProps = { w: canvas.width, h: canvas.height };
-    const ratio = Math.min(pageWidth / (imgProps.w / 2), pageHeight / (imgProps.h / 2));
-    const w = (imgProps.w / 2) * ratio;
-    const h = (imgProps.h / 2) * ratio;
+    const ratio = Math.min(pageWidth / (canvas.width / 2), pageHeight / (canvas.height / 2));
+    const w = (canvas.width / 2) * ratio;
+    const h = (canvas.height / 2) * ratio;
     const x = (pageWidth - w) / 2;
     const y = 10;
     pdf.addImage(imgData, "PNG", x, y, w, h);
-    const filename = `Timesheet_${form.jobNumber}_${form.date}.pdf`;
+    const filename = `Timesheet_${pdfDataSource.jobNumber}_${pdfDataSource.date}.pdf`;
     pdf.save(filename);
     setSubmitting(false);
   };
 
   const mailto = () => {
-    const subject = encodeURIComponent(`Timesheet ${form.jobNumber} - ${form.date}`);
+    saveEmails();
+    const subject = encodeURIComponent(`Timesheet ${pdfDataSource.jobNumber} - ${pdfDataSource.date}`);
     const body = encodeURIComponent(
-      `Hi Admin,\n\nPlease find attached the signed timesheet for job ${form.jobNumber}.\n\nClient: ${form.client}\nSite: ${form.site}\nDate: ${form.date}\nEmployee: ${form.employee}\nHours: ${form.hours}\n\nRegards,\n${form.employee}`
+      `Signed at: ${sealedAt || "(not sealed)"}
+Verification ID: ${verificationId ? verificationId.slice(0, 16) : "n/a"}
+
+Client: ${pdfDataSource.client}
+Site: ${pdfDataSource.site}
+Date: ${pdfDataSource.date}
+Employee: ${pdfDataSource.employee}
+Hours: ${pdfDataSource.hours}
+
+This email includes two recipients: Client Admin and Your Admin.`
     );
-    saveAdminEmail(form.adminEmail);
-    window.location.href = `mailto:${form.adminEmail || ""}?subject=${subject}&body=${body}`;
+    const to = [pdfDataSource.clientAdminEmail, pdfDataSource.personalAdminEmail].filter(Boolean).join(",");
+    window.location.href = `mailto:${to}?subject=${subject}&body=${body}`;
   };
 
   const reset = () => {
-    const def = localStorage.getItem("mes_default_admin_email") || "";
+    const def = localStorage.getItem("mes_personal_admin_default") || "";
     setForm({
       company: form.company,
       jobNumber: "",
@@ -246,110 +289,113 @@ export default function App() {
       employee: "",
       materials: "",
       clientName: "",
-      adminEmail: def,
+      clientAdminEmail: "",
+      personalAdminEmail: def,
     });
     setClientSignature("");
+    setIsSealed(false);
+    setSealedAt("");
+    setLockedForm(null);
+    setVerificationId("");
   };
 
   return (
     <div className="min-h-screen bg-gray-50 py-8">
       <div className="max-w-4xl mx-auto px-4">
-        <motion.h1
-          initial={{ opacity: 0, y: -8 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="text-2xl font-semibold tracking-tight"
-        >
+        <motion.h1 initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="text-2xl font-semibold tracking-tight">
           Timesheet + Client Sign‑off
         </motion.h1>
-        <p className="text-gray-600 mb-6">
-          Fill this out onsite, get the client to sign, then download the PDF and email it to admin.
-        </p>
+        <p className="text-gray-600 mb-6">Fill this out onsite, get the client to sign, then download the PDF and email it to both admins.</p>
 
         <div className="grid md:grid-cols-2 gap-6">
           {/* Form */}
           <div className="space-y-4">
             <Field label="Company" required>
-              <input className="w-full border rounded-xl px-3 py-2" value={form.company} onChange={update("company")} />
+              <input className="w-full border rounded-xl px-3 py-2" value={form.company} onChange={update("company")} disabled={isSealed} />
             </Field>
             <Field label="Job Number" required>
-              <input className="w-full border rounded-xl px-3 py-2" value={form.jobNumber} onChange={update("jobNumber")} placeholder="e.g., MB-042" />
+              <input className="w-full border rounded-xl px-3 py-2" value={form.jobNumber} onChange={update("jobNumber")} placeholder="e.g., MB-042" disabled={isSealed} />
             </Field>
             <Field label="Client" required>
-              <input className="w-full border rounded-xl px-3 py-2" value={form.client} onChange={update("client")} />
+              <input className="w-full border rounded-xl px-3 py-2" value={form.client} onChange={update("client")} disabled={isSealed} />
             </Field>
             <Field label="Site / Address" required>
-              <input className="w-full border rounded-xl px-3 py-2" value={form.site} onChange={update("site")} />
+              <input className="w-full border rounded-xl px-3 py-2" value={form.site} onChange={update("site")} disabled={isSealed} />
             </Field>
             <div className="grid grid-cols-3 gap-3">
               <Field label="Date" required>
-                <input type="date" className="w-full border rounded-xl px-3 py-2" value={form.date} onChange={update("date")} />
+                <input type="date" className="w-full border rounded-xl px-3 py-2" value={form.date} onChange={update("date")} disabled={isSealed} />
               </Field>
               <Field label="Start" required>
-                <input type="time" className="w-full border rounded-xl px-3 py-2" value={form.start} onChange={update("start")} />
+                <input type="time" className="w-full border rounded-xl px-3 py-2" value={form.start} onChange={update("start")} disabled={isSealed} />
               </Field>
               <Field label="Finish" required>
-                <input type="time" className="w-full border rounded-xl px-3 py-2" value={form.finish} onChange={update("finish")} />
+                <input type="time" className="w-full border rounded-xl px-3 py-2" value={form.finish} onChange={update("finish")} disabled={isSealed} />
               </Field>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <Field label="Break (min)">
-                <input type="number" className="w-full border rounded-xl px-3 py-2" value={form.breakMin} onChange={update("breakMin")} />
+                <input type="number" className="w-full border rounded-xl px-3 py-2" value={form.breakMin} onChange={update("breakMin")} disabled={isSealed} />
               </Field>
               <Field label="Hours (auto)">
                 <input className="w-full border rounded-xl px-3 py-2 bg-gray-100" value={form.hours} readOnly />
               </Field>
             </div>
             <Field label="Work Description" required>
-              <textarea className="w-full border rounded-xl px-3 py-2 min-h-[96px]" value={form.description} onChange={update("description")} placeholder="e.g., Set out culvert headwalls, as-built pickup, QA checks" />
+              <textarea className="w-full border rounded-xl px-3 py-2 min-h-[96px]" value={form.description} onChange={update("description")} placeholder="e.g., Set out culvert headwalls, as-built pickup, QA checks" disabled={isSealed} />
             </Field>
             <Field label="Materials / Extras (optional)">
-              <textarea className="w-full border rounded-xl px-3 py-2" value={form.materials} onChange={update("materials")} placeholder="e.g., Consumables, special equipment" />
+              <textarea className="w-full border rounded-xl px-3 py-2" value={form.materials} onChange={update("materials")} placeholder="e.g., Consumables, special equipment" disabled={isSealed} />
             </Field>
             <div className="grid grid-cols-2 gap-3">
               <Field label="Employee" required>
-                <input className="w-full border rounded-xl px-3 py-2" value={form.employee} onChange={update("employee")} placeholder="e.g., D. Adamson" />
+                <input className="w-full border rounded-xl px-3 py-2" value={form.employee} onChange={update("employee")} placeholder="e.g., D. Adamson" disabled={isSealed} />
               </Field>
-              <Field label="Admin email (recipient)">
+              <Field label="Client Admin Email (To)" required>
                 <div className="space-y-2">
-                  <input list="adminEmails" type="email" className="w-full border rounded-xl px-3 py-2" value={form.adminEmail} onChange={update("adminEmail")} placeholder="admin@mensurasurveys.com.au" />
-                  <datalist id="adminEmails">
-                    {knownAdmins.map((e, i) => (<option key={i} value={e} />))}
-                  </datalist>
+                  <input list="clientAdmins" type="email" className="w-full border rounded-xl px-3 py-2" value={form.clientAdminEmail} onChange={update("clientAdminEmail")} placeholder="client.admin@company.com" disabled={isSealed} />
+                  <datalist id="clientAdmins">{knownClientAdmins.map((e, i) => (<option key={i} value={e} />))}</datalist>
+                </div>
+              </Field>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Your Admin Email (CC/To)" required>
+                <div className="space-y-2">
+                  <input list="personalAdmins" type="email" className="w-full border rounded-xl px-3 py-2" value={form.personalAdminEmail} onChange={update("personalAdminEmail")} placeholder="admin@mensurasurveys.com.au" disabled={isSealed} />
+                  <datalist id="personalAdmins">{knownPersonalAdmins.map((e, i) => (<option key={i} value={e} />))}</datalist>
                   <label className="flex items-center gap-2 text-sm text-gray-600">
-                    <input type="checkbox" checked={setAsDefault} onChange={(e)=>setSetAsDefault(e.target.checked)} />
+                    <input type="checkbox" checked={personalAsDefault} onChange={(e) => setPersonalAsDefault(e.target.checked)} disabled={isSealed} />
                     Set as default on this device
                   </label>
                 </div>
               </Field>
+              <Field label="Client Name" required>
+                <input className="w-full border rounded-xl px-3 py-2" value={form.clientName} onChange={update("clientName")} placeholder="e.g., Site Supervisor" disabled={isSealed} />
+              </Field>
             </div>
-            <Field label="Client Name" required>
-              <input className="w-full border rounded-xl px-3 py-2" value={form.clientName} onChange={update("clientName")} placeholder="e.g., Site Supervisor" />
-            </Field>
+
             <Field label="Client Signature" required>
-              <SignaturePad onChange={setClientSignature} />
+              <SignaturePad onChange={onSignature} disabled={isSealed} />
+              {isSealed ? (
+                <div className="flex items-center gap-2 text-green-700 text-sm mt-2"><Lock className="w-4 h-4"/> Sealed at {new Date(sealedAt).toLocaleString()} • Verification ID: <span className="font-mono">{verificationId.slice(0,16)}</span></div>
+              ) : (
+                <div className="text-xs text-gray-500 mt-1">Once the client signs, the form locks. To make changes, you must clear the signature.</div>
+              )}
+              {isSealed && (
+                <button type="button" onClick={unlock} className="mt-2 inline-flex items-center gap-2 px-3 py-2 rounded-xl border shadow hover:bg-gray-50">
+                  <Unlock className="w-4 h-4"/> Clear signature & unlock
+                </button>
+              )}
             </Field>
 
             <div className="flex flex-wrap gap-3 pt-2">
-              <button
-                type="button"
-                onClick={downloadPDF}
-                disabled={submitting}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-2xl shadow border hover:bg-gray-50"
-              >
+              <button type="button" onClick={downloadPDF} disabled={submitting} className="inline-flex items-center gap-2 px-4 py-2 rounded-2xl shadow border hover:bg-gray-50">
                 <Download className="w-4 h-4" /> Download signed PDF
               </button>
-              <button
-                type="button"
-                onClick={mailto}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-2xl shadow border hover:bg-gray-50"
-              >
-                <Mail className="w-4 h-4" /> Open email draft
+              <button type="button" onClick={mailto} className="inline-flex items-center gap-2 px-4 py-2 rounded-2xl shadow border hover:bg-gray-50">
+                <Mail className="w-4 h-4" /> Open email draft (both)
               </button>
-              <button
-                type="button"
-                onClick={reset}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-2xl shadow border hover:bg-gray-50"
-              >
+              <button type="button" onClick={reset} className="inline-flex items-center gap-2 px-4 py-2 rounded-2xl shadow border hover:bg-gray-50">
                 <Trash2 className="w-4 h-4" /> Reset form
               </button>
             </div>
@@ -365,75 +411,58 @@ export default function App() {
               <div className="mt-3 text-sm">
                 <div className="flex justify-between">
                   <div>
-                    <div className="font-medium">{form.company}</div>
+                    <div className="font-medium">{pdfDataSource.company}</div>
                     <div className="text-gray-600">Work Order / Timesheet</div>
                   </div>
                   <div className="text-right text-gray-600">
-                    <div>Job: <span className="font-medium">{form.jobNumber || "—"}</span></div>
-                    <div>Date: {form.date}</div>
+                    <div>Job: <span className="font-medium">{pdfDataSource.jobNumber || "—"}</span></div>
+                    <div>Date: {pdfDataSource.date}</div>
                   </div>
                 </div>
                 <hr className="my-3" />
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <div className="text-gray-600">Client</div>
-                    <div className="font-medium">{form.client || "—"}</div>
+                    <div className="font-medium">{pdfDataSource.client || "—"}</div>
                   </div>
                   <div>
                     <div className="text-gray-600">Site</div>
-                    <div className="font-medium">{form.site || "—"}</div>
+                    <div className="font-medium">{pdfDataSource.site || "—"}</div>
                   </div>
                 </div>
                 <div className="grid grid-cols-4 gap-3 mt-2">
-                  <div>
-                    <div className="text-gray-600">Start</div>
-                    <div className="font-medium">{form.start}</div>
-                  </div>
-                  <div>
-                    <div className="text-gray-600">Finish</div>
-                    <div className="font-medium">{form.finish}</div>
-                  </div>
-                  <div>
-                    <div className="text-gray-600">Break (min)</div>
-                    <div className="font-medium">{form.breakMin}</div>
-                  </div>
-                  <div>
-                    <div className="text-gray-600">Hours</div>
-                    <div className="font-medium">{form.hours || "—"}</div>
-                  </div>
+                  <div><div className="text-gray-600">Start</div><div className="font-medium">{pdfDataSource.start}</div></div>
+                  <div><div className="text-gray-600">Finish</div><div className="font-medium">{pdfDataSource.finish}</div></div>
+                  <div><div className="text-gray-600">Break (min)</div><div className="font-medium">{pdfDataSource.breakMin}</div></div>
+                  <div><div className="text-gray-600">Hours</div><div className="font-medium">{pdfDataSource.hours || "—"}</div></div>
                 </div>
                 <div className="mt-3">
                   <div className="text-gray-600">Work Description</div>
-                  <div className="font-medium whitespace-pre-wrap min-h-[64px]">{form.description || "—"}</div>
+                  <div className="font-medium whitespace-pre-wrap min-h-[64px]">{pdfDataSource.description || "—"}</div>
                 </div>
-                {form.materials && (
+                {pdfDataSource.materials && (
                   <div className="mt-3">
                     <div className="text-gray-600">Materials / Extras</div>
-                    <div className="font-medium whitespace-pre-wrap">{form.materials}</div>
+                    <div className="font-medium whitespace-pre-wrap">{pdfDataSource.materials}</div>
                   </div>
                 )}
                 <div className="grid grid-cols-2 gap-3 mt-3">
-                  <div>
-                    <div className="text-gray-600">Employee</div>
-                    <div className="font-medium">{form.employee || "—"}</div>
-                  </div>
-                  <div>
-                    <div className="text-gray-600">Client Name</div>
-                    <div className="font-medium">{form.clientName || "—"}</div>
-                  </div>
+                  <div><div className="text-gray-600">Employee</div><div className="font-medium">{pdfDataSource.employee || "—"}</div></div>
+                  <div><div className="text-gray-600">Client Name</div><div className="font-medium">{pdfDataSource.clientName || "—"}</div></div>
                 </div>
                 <div className="mt-3">
                   <div className="text-gray-600 mb-1">Client Signature</div>
                   <div className="border rounded-xl p-2 h-32 flex items-center justify-center bg-white">
-                    {clientSignature ? (
-                      <img src={clientSignature} alt="Signature" className="max-h-28 object-contain" />
-                    ) : (
-                      <div className="text-gray-400 text-sm flex items-center gap-2"><Check className="w-4 h-4"/> Awaiting signature…</div>
-                    )}
+                    {clientSignature ? (<img src={clientSignature} alt="Signature" className="max-h-28 object-contain" />) : (<div className="text-gray-400 text-sm flex items-center gap-2"><Check className="w-4 h-4"/> Awaiting signature…</div>)}
                   </div>
                 </div>
                 <div className="text-[10px] text-gray-500 mt-2">
-                  By signing, the client confirms the above work was completed satisfactorily and authorises invoicing.
+                  {isSealed ? (
+                    <>Sealed at {new Date(sealedAt).toLocaleString()} • Verification ID: <span className="font-mono">{verificationId.slice(0,16)}</span><br/>By signing, the client confirms the above work was completed satisfactorily and authorises invoicing.</>
+                  ) : (
+                    <>By signing, the client confirms the above work was completed satisfactorily and authorises invoicing.
+ Form locks automatically after signature.</>
+                  )}
                 </div>
               </div>
             </div>
@@ -441,9 +470,18 @@ export default function App() {
         </div>
 
         <div className="mt-6 text-xs text-gray-500">
-          Tip: Admin email is saved only on this device (no server). To auto-send PDFs without opening your mail app, add EmailJS or a simple webhook later.
+          Tip: Emails are remembered on this device only. To auto-send PDFs without opening your mail app, add EmailJS or a simple server later.
         </div>
       </div>
     </div>
+  );
+}
+
+function Field({ label, children, required }) {
+  return (
+    <label className="block space-y-1">
+      <span className="text-sm font-medium text-gray-700">{label} {required && <span className="text-red-500">*</span>}</span>
+      {children}
+    </label>
   );
 }
