@@ -11,8 +11,8 @@ import { PublicClientApplication, InteractionRequiredAuthError } from "@azure/ms
 // 👉 Replace these two values after you create the Azure App Registration
 const msalConfig = {
   auth: {
-    clientId: "REPLACE_WITH_YOUR_CLIENT_ID",
-    authority: "https://login.microsoftonline.com/REPLACE_WITH_YOUR_TENANT_ID",
+    clientId: "fc6960ef-7807-4443-b7c2-c9fda99dc065",
+    authority: "https://login.microsoftonline.com/2fda73dd-9350-4f9b-abb0-4a8cba896df8",
     redirectUri: typeof window !== "undefined" ? window.location.origin : "",
   },
   cache: { cacheLocation: "localStorage" },
